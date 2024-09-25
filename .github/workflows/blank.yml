@@ -1,0 +1,112 @@
+name: Build OpenWRT for NRADIO WT9103 (512M Flash)
+
+on:
+  workflow_dispatch:
+
+env:
+  REPO_URL: https://github.com/hanwckf/immortalwrt-mt798x
+  REPO_BRANCH: openwrt-21.02
+  FEEDS_CONF: feeds.conf.default
+  CONFIG_FILE: .config
+  TZ: Asia/Shanghai
+  DEVICE: nradio_wt9103_512m
+  UPLOAD_OUTPUT: true
+
+jobs:
+  build:
+    runs-on: ubuntu-20.04
+    permissions:
+      contents: write
+
+    steps:
+    
+    # 第一步：获取源码
+    - name: Checkout code
+      uses: actions/checkout@v2
+    
+    # 第二步：设置编译环境
+    - name: Setup build environment
+      run: |
+        sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc
+        sudo -E apt-get -qq update
+        sudo -E apt-get -qq install -y ack neofetch antlr3 aria2 asciidoc autoconf automake autopoint binutils bison build-essential bzip2 ccache cmake cpio curl device-tree-compiler fastjar flex gawk gettext gcc-multilib g++-multilib git gperf haveged help2man intltool libc6-dev-i386 libelf-dev libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev libncurses5-dev libncursesw5-dev libreadline-dev libssl-dev libtool lrzsz mkisofs msmtp nano ninja-build p7zip p7zip-full patch pkgconf python2.7 python3 python3-pip libpython3-dev qemu-utils rsync scons squashfs-tools subversion swig texinfo uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev
+        sudo -E apt-get -qq autoremove --purge
+        sudo -E apt-get -qq clean
+        sudo timedatectl set-timezone "$TZ"
+        sudo mkdir -p /workdir
+        sudo chown $USER:$GROUPS /workdir
+
+    # 第三步：克隆 OpenWRT 源码
+    - name: Clone OpenWRT source code
+      run: |
+        git clone $REPO_URL -b $REPO_BRANCH openwrt
+        ln -sf /workdir/openwrt $GITHUB_WORKSPACE/openwrt
+
+    # 第四步：配置 Feeds 包
+    - name: Configure Feeds
+      run: |
+        cd openwrt
+        echo "src-git kenzo https://github.com/kenzok8/openwrt-packages" >> ./feeds.conf.default
+        echo "src-git small https://github.com/kenzok8/small" >> ./feeds.conf.default
+        echo "src-git luci-app-zmodem https://github.com/Zy143L/luci-app-zmodem.git" >> ./feeds.conf.default
+        echo "src-git luci-app-cellscan https://github.com/newton-miku/luci-app-cellscan.git" >> ./feeds.conf.default
+        echo "src-git luci-app-sms-tool https://github.com/iceriverweng/luci-app-sms-tool.git" >> ./feeds.conf.default
+        echo "src-git openclash https://github.com/vernesong/OpenClash.git" >> ./feeds.conf.default
+        ./scripts/feeds update -a
+        ./scripts/feeds install -a
+
+    # 第五步：修改 LAN IP
+    - name: Modify LAN IP
+      run: |
+        cd openwrt
+        sed -i 's/192.168.1.1/192.168.2.1/g' package/base-files/files/bin/config_generate
+
+    # 第六步：准备配置文件
+    - name: Setup config file
+      run: |
+        cp -f $GITHUB_WORKSPACE/.config $GITHUB_WORKSPACE/openwrt/
+
+    # 第七步：下载编译所需的依赖
+    - name: Download dependencies
+      run: |
+        cd openwrt
+        make defconfig
+        make download -j8
+        find dl -size -1024c -exec ls -l {} \;
+        find dl -size -1024c -exec rm -f {} \;
+
+    # 第八步：编译固件
+    - name: Compile OpenWRT firmware
+      run: |
+        cd openwrt
+        make -j$(nproc)
+        echo "FILE_DATE=$(date +"%Y%m%d%H%M")" >> $GITHUB_ENV
+
+    # 第九步：列出编译生成的文件
+    - name: List compiled files
+      run: |
+        ls -R openwrt/bin/
+
+    # 第十步：上传生成的固件文件
+    - name: Upload firmware files
+      uses: actions/upload-artifact@v2
+      if: env.UPLOAD_OUTPUT == 'true' && !cancelled()
+      with:
+        name: ${{ env.DEVICE }}--${{ env.FILE_DATE }}
+        path: openwrt/bin/targets/*/*/*
+
+    # 第十一步：整理输出文件
+    - name: Clean up output files
+      run: |
+        cd openwrt/bin/targets/*/*
+        rm -rf packages
+
+    # 第十二步：发布固件至 Release
+    - name: Release firmware
+      uses: ncipollo/release-action@v1
+      with:
+        tag: "${{ env.DEVICE }}--${{ env.FILE_DATE }}"
+        artifacts: "openwrt/bin/targets/*/*/*"
+        body: |
+          # 未测试×
+          IP: 192.168.2.1 | Password: none
